@@ -361,6 +361,7 @@ document.addEventListener('DOMContentLoaded', function () {
     history.push({ role: 'user', content: userText });
     if (textInput) { textInput.value = ''; }
     setRingState('thinking');
+    setVoiceStatus('thinking');
     var typing = showTyping();
 
     fetch('/.netlify/functions/mason-chat', {
@@ -383,20 +384,22 @@ document.addEventListener('DOMContentLoaded', function () {
           addCalendarAction(data.calendar);
           openMasonCalendar(data.calendar);
         }
-        speak(reply);
+        setVoiceStatus(handsFree ? 'speaking' : 'idle');
+        speak(reply).then(resumeHandsFree, resumeHandsFree);
       })
       .catch(function () {
         typing.remove();
         setRingState('idle');
         addBubble("Sorry, I'm having trouble connecting right now \u2014 mind trying again in a moment?", false);
+        resumeHandsFree();
       });
   }
 
   // ---- Text input ----
   if (sendBtn && textInput) {
-    sendBtn.addEventListener('click', function () { stopSpeaking(); unlockAudio(); sendToMason(textInput.value.trim()); });
+    sendBtn.addEventListener('click', function () { endHandsFree(); stopSpeaking(); unlockAudio(); sendToMason(textInput.value.trim()); });
     textInput.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { stopSpeaking(); unlockAudio(); sendToMason(textInput.value.trim()); }
+      if (e.key === 'Enter') { endHandsFree(); stopSpeaking(); unlockAudio(); sendToMason(textInput.value.trim()); }
     });
   }
 
@@ -410,44 +413,147 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  // ---- Voice input (mic) ----
+  // ---- Voice input (mic): hands-free conversation ----
+  // One tap on the mic starts a hands-free conversation: the customer
+  // talks, Mason answers out loud, then the mic turns itself back on so
+  // they can simply keep talking. Mason never listens while he is
+  // speaking (so he can't hear himself). After two quiet turns in a row
+  // the mic rests, and a status line explains how to continue.
   var SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var handsFree = false;
+  var quietTurns = 0;
+  var heardSpeech = false;
+  var sentThisTurn = false;
+  var resumeTimer = null;
+  var MAX_QUIET_TURNS = 2;
+
+  var voiceStatus = null;
+  var inputRow = panel ? panel.querySelector('.mason-input-row') : null;
+  if (inputRow) {
+    voiceStatus = document.createElement('div');
+    voiceStatus.className = 'mason-voice-status';
+    voiceStatus.setAttribute('aria-live', 'polite');
+    inputRow.parentNode.insertBefore(voiceStatus, inputRow.nextSibling);
+  }
+  var VOICE_TEXT = {
+    idle: 'Tap the microphone to talk with Mason, or type below.',
+    listening: 'Listening… go ahead and talk.',
+    thinking: 'Mason is thinking…',
+    speaking: 'Mason is answering. The microphone turns back on when he finishes.',
+    resting: 'Tap the microphone whenever you’re ready to keep talking.',
+    tapToAnswer: 'Tap the microphone to answer Mason.',
+    allowMic: 'To talk out loud, allow the microphone for this site. You can also type below.',
+    typeOnly: 'Type your message below to chat with Mason.'
+  };
+  function setVoiceStatus(key) {
+    if (!voiceStatus) { return; }
+    if (!recognition && key !== 'thinking') { key = 'typeOnly'; }
+    voiceStatus.textContent = VOICE_TEXT[key] || VOICE_TEXT.idle;
+    voiceStatus.setAttribute('data-state', key);
+  }
+
+  function startListening() {
+    if (!recognition || isListening || !panel.classList.contains('open')) { return false; }
+    heardSpeech = false;
+    sentThisTurn = false;
+    try {
+      recognition.start();
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function endHandsFree() {
+    handsFree = false;
+    quietTurns = 0;
+    if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+    if (recognition && isListening) { try { recognition.stop(); } catch (err) { /* ignore */ } }
+  }
+
+  // Called after Mason finishes answering (or if the answer failed).
+  function resumeHandsFree() {
+    if (!handsFree) { setVoiceStatus('idle'); return; }
+    if (resumeTimer) { clearTimeout(resumeTimer); }
+    // Short pause so the tail of Mason's voice isn't picked up.
+    resumeTimer = setTimeout(function () {
+      resumeTimer = null;
+      if (!handsFree) { return; }
+      if (!startListening()) { setVoiceStatus('tapToAnswer'); }
+    }, 350);
+  }
+
   if (SpeechRecognitionCtor && micBtn) {
     recognition = new SpeechRecognitionCtor();
     recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
     recognition.lang = 'en-US';
 
     recognition.addEventListener('start', function () {
       isListening = true;
       micBtn.classList.add('active');
+      setVoiceStatus('listening');
+    });
+    recognition.addEventListener('result', function (e) {
+      var finalText = '';
+      var liveText = '';
+      for (var i = 0; i < e.results.length; i++) {
+        var piece = e.results[i][0].transcript;
+        if (e.results[i].isFinal) { finalText += piece; } else { liveText += piece; }
+      }
+      if (finalText || liveText) { heardSpeech = true; }
+      // Show the customer their words as they speak.
+      if (textInput && !sentThisTurn) { textInput.value = (finalText + liveText).trim(); }
+      if (finalText.trim() && !sentThisTurn) {
+        sentThisTurn = true;
+        quietTurns = 0;
+        stopSpeaking();
+        sendToMason(finalText.trim());
+      }
+    });
+    recognition.addEventListener('error', function (e) {
+      isListening = false;
+      micBtn.classList.remove('active');
+      if (e && (e.error === 'not-allowed' || e.error === 'service-not-allowed')) {
+        endHandsFree();
+        setVoiceStatus('allowMic');
+      }
     });
     recognition.addEventListener('end', function () {
       isListening = false;
       micBtn.classList.remove('active');
-    });
-    recognition.addEventListener('result', function (e) {
-      var transcript = e.results[0][0].transcript;
-      stopSpeaking();
-      sendToMason(transcript.trim());
-    });
-    recognition.addEventListener('error', function () {
-      isListening = false;
-      micBtn.classList.remove('active');
+      if (sentThisTurn) { return; } // Mason is now answering.
+      if (voiceStatus && voiceStatus.getAttribute('data-state') === 'allowMic') { return; }
+      if (!handsFree) { setVoiceStatus('idle'); return; }
+      if (!heardSpeech) { quietTurns += 1; }
+      if (quietTurns >= MAX_QUIET_TURNS) {
+        endHandsFree();
+        setVoiceStatus('resting');
+        return;
+      }
+      if (!startListening()) { setVoiceStatus('tapToAnswer'); }
     });
 
     micBtn.addEventListener('click', function () {
       unlockAudio();
+      if (isListening || (handsFree && resumeTimer)) {
+        // Tapping again ends the hands-free conversation.
+        endHandsFree();
+        setVoiceStatus('idle');
+        return;
+      }
       stopSpeaking();
-      if (isListening) { recognition.stop(); return; }
-      try { recognition.start(); } catch (err) { /* already running, ignore */ }
+      handsFree = true;
+      quietTurns = 0;
+      if (!startListening()) { setVoiceStatus('tapToAnswer'); }
     });
   } else if (micBtn) {
     // Voice input unsupported in this browser (e.g. an iOS in-app browser) —
     // disable the mic but leave typing and Mason's spoken replies working.
     micBtn.disabled = true;
-    micBtn.title = 'Voice input isn\u2019t available in this browser \u2014 type your message instead';
+    micBtn.title = 'Voice input isn’t available in this browser — type your message instead';
   }
+  setVoiceStatus('idle');
 
   function openPanel() {
     panel.classList.add('open');
@@ -464,7 +570,8 @@ document.addEventListener('DOMContentLoaded', function () {
     if (launcher) { launcher.setAttribute('aria-expanded', 'false'); }
     stopSpeaking();
     setRingState('idle');
-    if (recognition && isListening) { recognition.stop(); }
+    endHandsFree();
+    setVoiceStatus('idle');
   }
 
   if (launcher && panel) {

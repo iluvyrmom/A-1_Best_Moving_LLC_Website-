@@ -1177,6 +1177,18 @@ p { margin: 0 0 1em; color: var(--ink); }
 }
 .mason-mute-btn.muted { color: rgba(244,236,212,0.35); }
 .mason-mic-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.mason-voice-status {
+  padding: 8px 14px 10px;
+  background: var(--navy);
+  color: var(--mist);
+  font-size: 0.95rem;
+  line-height: 1.35;
+  text-align: center;
+}
+.mason-voice-status[data-state="listening"] { color: var(--accent-light); font-weight: 700; }
+.mason-voice-status[data-state="allowMic"],
+.mason-voice-status[data-state="tapToAnswer"],
+.mason-voice-status[data-state="resting"] { color: var(--white); }
 .mason-launcher .mason-text { text-align: left; line-height: 1.15; }
 .mason-launcher .mason-text .l1 { font-size: 0.68rem; color: var(--mist); }
 .mason-launcher .mason-text .l2 { font-size: 0.88rem; font-weight: 700; color: var(--white); }
