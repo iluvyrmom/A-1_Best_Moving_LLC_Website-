@@ -429,7 +429,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   var voiceStatus = null;
   var inputRow = panel ? panel.querySelector('.mason-input-row') : null;
-  if (inputRow) {
+  if (inputRow && inputRow.parentNode && typeof document.createElement === 'function') {
     voiceStatus = document.createElement('div');
     voiceStatus.className = 'mason-voice-status';
     voiceStatus.setAttribute('aria-live', 'polite');
