@@ -355,8 +355,22 @@ document.addEventListener('DOMContentLoaded', function () {
     scrollToBottom();
   }
 
+  // Some phone browsers report one spoken sentence several times in a row,
+  // and a fast double tap can do the same. Every message leaves the page
+  // through here, so this is the one place that refuses an exact repeat
+  // sent moments apart. A customer who truly repeats themselves later is
+  // still heard.
+  var DUPLICATE_WINDOW_MS = 3000;
+  var lastSentText = '';
+  var lastSentAt = 0;
+
   function sendToMason(userText) {
     if (!userText) { return; }
+    var normalized = userText.replace(/\s+/g, ' ').trim().toLowerCase();
+    var now = Date.now();
+    if (normalized === lastSentText && now - lastSentAt < DUPLICATE_WINDOW_MS) { return; }
+    lastSentText = normalized;
+    lastSentAt = now;
     addBubble(userText, true);
     history.push({ role: 'user', content: userText });
     if (textInput) { textInput.value = ''; }
@@ -388,6 +402,8 @@ document.addEventListener('DOMContentLoaded', function () {
         speak(reply).then(resumeHandsFree, resumeHandsFree);
       })
       .catch(function () {
+        // Let the customer resend the same words right away after a failure.
+        lastSentText = '';
         typing.remove();
         setRingState('idle');
         addBubble("Sorry, I'm having trouble connecting right now \u2014 mind trying again in a moment?", false);

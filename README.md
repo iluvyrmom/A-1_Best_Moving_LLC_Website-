@@ -26,4 +26,5 @@ variables.
 node --test tests/payment-flow.test.mjs
 node --test tests/speech-text.test.js
 node --test tests/voice-single-track.test.js
+node --test tests/no-duplicate-send.test.js
 ```
