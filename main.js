@@ -435,12 +435,23 @@ document.addEventListener('DOMContentLoaded', function () {
   // they can simply keep talking. Mason never listens while he is
   // speaking (so he can't hear himself). After two quiet turns in a row
   // the mic rests, and a status line explains how to continue.
+  //
+  // Phones end a listening session at the first short pause, which made
+  // Mason answer before the customer finished. So each finished piece is
+  // collected, the mic keeps listening, and the whole message is sent only
+  // after SILENCE_BEFORE_SEND_MS of quiet. Tapping the mic while talking
+  // sends right away.
   var SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var SILENCE_BEFORE_SEND_MS = 2000;
   var handsFree = false;
   var quietTurns = 0;
   var heardSpeech = false;
   var sentThisTurn = false;
   var resumeTimer = null;
+  var sendTimer = null;
+  var pendingSpeech = '';   // finished pieces of this turn, oldest first
+  var sessionFinal = '';    // finished words from the current listening session
+  var sessionLive = '';     // words still being recognized in this session
   var MAX_QUIET_TURNS = 2;
 
   var voiceStatus = null;
@@ -453,7 +464,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
   var VOICE_TEXT = {
     idle: 'Tap the microphone to talk with Mason, or type below.',
-    listening: 'Listening… go ahead and talk.',
+    listening: 'Listening… take your time. Mason replies when you pause.',
     thinking: 'Mason is thinking…',
     speaking: 'Mason is answering. The microphone turns back on when he finishes.',
     resting: 'Tap the microphone whenever you’re ready to keep talking.',
@@ -468,10 +479,42 @@ document.addEventListener('DOMContentLoaded', function () {
     voiceStatus.setAttribute('data-state', key);
   }
 
+  function joinWords(first, second) {
+    return (String(first || '') + ' ' + String(second || '')).replace(/\s+/g, ' ').trim();
+  }
+
+  function clearSendTimer() {
+    if (sendTimer) { clearTimeout(sendTimer); sendTimer = null; }
+  }
+
+  function clearPendingSpeech() {
+    clearSendTimer();
+    pendingSpeech = '';
+    sessionFinal = '';
+    sessionLive = '';
+  }
+
+  function wordsSoFar() {
+    return joinWords(pendingSpeech, sessionFinal || sessionLive);
+  }
+
+  // The customer has finished: stop listening and send everything once.
+  function finishTurn() {
+    var message = wordsSoFar();
+    clearPendingSpeech();
+    if (!message || sentThisTurn) { return; }
+    sentThisTurn = true;
+    quietTurns = 0;
+    if (recognition && isListening) { try { recognition.stop(); } catch (err) { /* ignore */ } }
+    stopSpeaking();
+    sendToMason(message);
+  }
+
   function startListening() {
     if (!recognition || isListening || !panel.classList.contains('open')) { return false; }
     heardSpeech = false;
-    sentThisTurn = false;
+    sessionFinal = '';
+    sessionLive = '';
     try {
       recognition.start();
       return true;
@@ -483,6 +526,7 @@ document.addEventListener('DOMContentLoaded', function () {
   function endHandsFree() {
     handsFree = false;
     quietTurns = 0;
+    clearPendingSpeech();
     if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
     if (recognition && isListening) { try { recognition.stop(); } catch (err) { /* ignore */ } }
   }
@@ -495,6 +539,8 @@ document.addEventListener('DOMContentLoaded', function () {
     resumeTimer = setTimeout(function () {
       resumeTimer = null;
       if (!handsFree) { return; }
+      sentThisTurn = false;
+      clearPendingSpeech();
       if (!startListening()) { setVoiceStatus('tapToAnswer'); }
     }, 350);
   }
@@ -511,21 +557,26 @@ document.addEventListener('DOMContentLoaded', function () {
       setVoiceStatus('listening');
     });
     recognition.addEventListener('result', function (e) {
+      if (sentThisTurn) { return; }
+      // Rebuild from the full list every time, so a phone that reports the
+      // same words twice changes nothing.
       var finalText = '';
       var liveText = '';
       for (var i = 0; i < e.results.length; i++) {
         var piece = e.results[i][0].transcript;
         if (e.results[i].isFinal) { finalText += piece; } else { liveText += piece; }
       }
-      if (finalText || liveText) { heardSpeech = true; }
+      finalText = finalText.trim();
+      liveText = liveText.trim();
+      if (!finalText && !liveText) { return; }
+      heardSpeech = true;
+      quietTurns = 0;
+      clearSendTimer(); // still talking
+      stopSpeaking();
+      sessionFinal = finalText;
+      sessionLive = joinWords(finalText, liveText);
       // Show the customer their words as they speak.
-      if (textInput && !sentThisTurn) { textInput.value = (finalText + liveText).trim(); }
-      if (finalText.trim() && !sentThisTurn) {
-        sentThisTurn = true;
-        quietTurns = 0;
-        stopSpeaking();
-        sendToMason(finalText.trim());
-      }
+      if (textInput) { textInput.value = wordsSoFar(); }
     });
     recognition.addEventListener('error', function (e) {
       isListening = false;
@@ -540,6 +591,20 @@ document.addEventListener('DOMContentLoaded', function () {
       micBtn.classList.remove('active');
       if (sentThisTurn) { return; } // Mason is now answering.
       if (voiceStatus && voiceStatus.getAttribute('data-state') === 'allowMic') { return; }
+
+      // Keep what was said in this session, then keep listening for more.
+      var heardThisSession = sessionFinal || sessionLive;
+      if (heardThisSession) { pendingSpeech = joinWords(pendingSpeech, heardThisSession); }
+      sessionFinal = '';
+      sessionLive = '';
+
+      if (pendingSpeech) {
+        clearSendTimer();
+        sendTimer = setTimeout(function () { sendTimer = null; finishTurn(); }, SILENCE_BEFORE_SEND_MS);
+        if (!startListening()) { clearSendTimer(); finishTurn(); }
+        return;
+      }
+
       if (!handsFree) { setVoiceStatus('idle'); return; }
       if (!heardSpeech) { quietTurns += 1; }
       if (quietTurns >= MAX_QUIET_TURNS) {
@@ -552,6 +617,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
     micBtn.addEventListener('click', function () {
       unlockAudio();
+      if (wordsSoFar()) {
+        // Tapping while talking means "I'm done": send now.
+        finishTurn();
+        return;
+      }
       if (isListening || (handsFree && resumeTimer)) {
         // Tapping again ends the hands-free conversation.
         endHandsFree();
@@ -561,6 +631,7 @@ document.addEventListener('DOMContentLoaded', function () {
       stopSpeaking();
       handsFree = true;
       quietTurns = 0;
+      sentThisTurn = false;
       if (!startListening()) { setVoiceStatus('tapToAnswer'); }
     });
   } else if (micBtn) {

@@ -113,14 +113,64 @@ function finalResult(text) {
   return { results: [result] };
 }
 
+const waitForPause = () => new Promise((resolve) => setTimeout(resolve, 2150));
+
+function liveResult(text) {
+  const result = [{ transcript: text }];
+  result.isFinal = false;
+  return { results: [result] };
+}
+
 test('one spoken sentence reported three times reaches Mason once', async () => {
   const h = createHarness();
   h.launcher.dispatch('click'); // open the chat
   h.mic.dispatch('click'); // start listening
   const recognition = h.getRecognition();
   for (let i = 0; i < 3; i += 1) recognition.emit('result', finalResult('I need two movers Saturday'));
-  await settle();
+  recognition.emit('end');
+  await waitForPause();
   assert.deepEqual(h.chatMessages, ['I need two movers Saturday']);
+});
+
+test('Mason waits through a short pause and hears the whole message', async () => {
+  const h = createHarness();
+  h.launcher.dispatch('click');
+  h.mic.dispatch('click');
+  const recognition = h.getRecognition();
+  recognition.emit('result', finalResult('I am moving from Vancouver'));
+  recognition.emit('end'); // the phone stops at the first pause
+  await settle();
+  assert.deepEqual(h.chatMessages, [], 'nothing is sent during a short pause');
+  recognition.emit('result', liveResult('to Tigard'));
+  recognition.emit('result', finalResult('to Tigard next Friday'));
+  recognition.emit('end');
+  assert.equal(h.input.value, 'I am moving from Vancouver to Tigard next Friday');
+  await waitForPause();
+  assert.deepEqual(h.chatMessages, ['I am moving from Vancouver to Tigard next Friday']);
+});
+
+test('words the phone never marked finished are still sent', async () => {
+  const h = createHarness();
+  h.launcher.dispatch('click');
+  h.mic.dispatch('click');
+  const recognition = h.getRecognition();
+  recognition.emit('result', liveResult('Do you move pianos'));
+  recognition.emit('end');
+  await waitForPause();
+  assert.deepEqual(h.chatMessages, ['Do you move pianos']);
+});
+
+test('tapping the mic while talking sends right away', async () => {
+  const h = createHarness();
+  h.launcher.dispatch('click');
+  h.mic.dispatch('click');
+  const recognition = h.getRecognition();
+  recognition.emit('result', finalResult('Two movers please'));
+  h.mic.dispatch('click');
+  await settle();
+  assert.deepEqual(h.chatMessages, ['Two movers please']);
+  await waitForPause();
+  assert.deepEqual(h.chatMessages, ['Two movers please'], 'still sent only once');
 });
 
 test('the same message sent three times in a row reaches Mason once', async () => {
