@@ -50,10 +50,10 @@ function createHarness() {
   let recognition = null;
 
   class FakeRecognition {
-    constructor() { this.listeners = {}; recognition = this; }
+    constructor() { this.listeners = {}; this.starts = 0; recognition = this; }
     addEventListener(type, l) { (this.listeners[type] ||= []).push(l); }
     emit(type, event = {}) { for (const l of this.listeners[type] || []) l(event); }
-    start() { this.emit('start'); }
+    start() { this.starts += 1; this.emit('start'); }
     stop() { this.emit('end'); }
   }
 
@@ -147,6 +147,42 @@ test('Mason waits through a short pause and hears the whole message', async () =
   assert.equal(h.input.value, 'I am moving from Vancouver to Tigard next Friday');
   await waitForPause();
   assert.deepEqual(h.chatMessages, ['I am moving from Vancouver to Tigard next Friday']);
+});
+
+function results(...items) {
+  return {
+    results: items.map(([text, isFinal]) => {
+      const result = [{ transcript: text }];
+      result.isFinal = isFinal;
+      return result;
+    }),
+  };
+}
+
+test('the mic stays on through a pause, so the phone does not beep mid-sentence', async () => {
+  const h = createHarness();
+  h.launcher.dispatch('click');
+  h.mic.dispatch('click');
+  const recognition = h.getRecognition();
+  assert.equal(recognition.continuous, true);
+  recognition.emit('result', results(['I am moving from Vancouver', true]));
+  await new Promise((resolve) => setTimeout(resolve, 1200)); // a short pause
+  recognition.emit('result', results(['I am moving from Vancouver', true], ['to Tigard', false]));
+  recognition.emit('result', results(['I am moving from Vancouver', true], ['to Tigard next Friday', true]));
+  assert.deepEqual(h.chatMessages, [], 'nothing is sent while they are still talking');
+  await waitForPause();
+  assert.deepEqual(h.chatMessages, ['I am moving from Vancouver to Tigard next Friday']);
+  assert.equal(recognition.starts, 1, 'the mic was started once for the whole sentence');
+});
+
+test('words a phone repeats inside later results are kept once', async () => {
+  const h = createHarness();
+  h.launcher.dispatch('click');
+  h.mic.dispatch('click');
+  const recognition = h.getRecognition();
+  recognition.emit('result', results(['I am', true], ['I am moving', true], ['I am moving to Tigard', true]));
+  await waitForPause();
+  assert.deepEqual(h.chatMessages, ['I am moving to Tigard']);
 });
 
 test('words the phone never marked finished are still sent', async () => {

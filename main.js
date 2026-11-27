@@ -436,11 +436,11 @@ document.addEventListener('DOMContentLoaded', function () {
   // speaking (so he can't hear himself). After two quiet turns in a row
   // the mic rests, and a status line explains how to continue.
   //
-  // Phones end a listening session at the first short pause, which made
-  // Mason answer before the customer finished. So each finished piece is
-  // collected, the mic keeps listening, and the whole message is sent only
-  // after SILENCE_BEFORE_SEND_MS of quiet. Tapping the mic while talking
-  // sends right away.
+  // The mic stays on through short pauses (continuous listening), so the
+  // phone does not chime on and off mid-sentence. The whole message is
+  // sent once the customer has been quiet for SILENCE_BEFORE_SEND_MS, or
+  // right away if they tap the mic. If a phone ends the session on its
+  // own anyway, the words so far are kept and listening resumes.
   var SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
   var SILENCE_BEFORE_SEND_MS = 2000;
   var handsFree = false;
@@ -481,6 +481,25 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function joinWords(first, second) {
     return (String(first || '') + ' ' + String(second || '')).replace(/\s+/g, ' ').trim();
+  }
+
+  // Some phones repeat earlier words inside later results ("I am",
+  // "I am moving"). Merge so each word is kept once.
+  function mergeWords(sofar, piece) {
+    var a = String(sofar || '').trim();
+    var b = String(piece || '').trim();
+    if (!a) { return b; }
+    if (!b) { return a; }
+    var lowA = a.toLowerCase();
+    var lowB = b.toLowerCase();
+    if (lowB.indexOf(lowA) === 0) { return b; }
+    if (lowA.slice(-lowB.length) === lowB) { return a; }
+    return joinWords(a, b);
+  }
+
+  function armSendTimer() {
+    clearSendTimer();
+    sendTimer = setTimeout(function () { sendTimer = null; finishTurn(); }, SILENCE_BEFORE_SEND_MS);
   }
 
   function clearSendTimer() {
@@ -547,7 +566,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   if (SpeechRecognitionCtor && micBtn) {
     recognition = new SpeechRecognitionCtor();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
@@ -564,17 +583,15 @@ document.addEventListener('DOMContentLoaded', function () {
       var liveText = '';
       for (var i = 0; i < e.results.length; i++) {
         var piece = e.results[i][0].transcript;
-        if (e.results[i].isFinal) { finalText += piece; } else { liveText += piece; }
+        if (e.results[i].isFinal) { finalText = mergeWords(finalText, piece); } else { liveText = mergeWords(liveText, piece); }
       }
-      finalText = finalText.trim();
-      liveText = liveText.trim();
       if (!finalText && !liveText) { return; }
       heardSpeech = true;
       quietTurns = 0;
-      clearSendTimer(); // still talking
       stopSpeaking();
       sessionFinal = finalText;
-      sessionLive = joinWords(finalText, liveText);
+      sessionLive = mergeWords(finalText, liveText);
+      armSendTimer(); // restarts on every word, so it only fires after quiet
       // Show the customer their words as they speak.
       if (textInput) { textInput.value = wordsSoFar(); }
     });
@@ -599,9 +616,8 @@ document.addEventListener('DOMContentLoaded', function () {
       sessionLive = '';
 
       if (pendingSpeech) {
-        clearSendTimer();
-        sendTimer = setTimeout(function () { sendTimer = null; finishTurn(); }, SILENCE_BEFORE_SEND_MS);
-        if (!startListening()) { clearSendTimer(); finishTurn(); }
+        if (!sendTimer) { armSendTimer(); }
+        if (!startListening()) { finishTurn(); }
         return;
       }
 
